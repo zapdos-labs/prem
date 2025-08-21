@@ -1,38 +1,95 @@
-import kuzu
+from robyn import Robyn
+from robyn.responses import Response
+from embedding import embedding_service
+import json
 
-def main():
-    # Create an empty on-disk database and connect to it
-    db = kuzu.Database("example.kuzu")
-    conn = kuzu.Connection(db)
+app = Robyn(__file__)
 
-    # Drop relationship tables first
-    conn.execute("DROP TABLE IF EXISTS LivesIn")
-    conn.execute("DROP TABLE IF EXISTS Follows")
-    # Then drop node tables
-    conn.execute("DROP TABLE IF EXISTS User")
-    conn.execute("DROP TABLE IF EXISTS City")
+@app.get("/")
+async def h(request):
+    return "Hello, world!"
 
-    # Create schema
-    conn.execute("CREATE NODE TABLE User(name STRING PRIMARY KEY, age INT64)")
-    conn.execute("CREATE NODE TABLE City(name STRING PRIMARY KEY, population INT64)")
-    conn.execute("CREATE REL TABLE Follows(FROM User TO User, since INT64)")
-    conn.execute("CREATE REL TABLE LivesIn(FROM User TO City)")
+from robyn import Robyn
+from embedding import embedding_service
+import json
 
-    # Insert data
-    conn.execute('COPY User FROM "./data/user.csv"')
-    conn.execute('COPY City FROM "./data/city.csv"')
-    conn.execute('COPY Follows FROM "./data/follows.csv"')
-    conn.execute('COPY LivesIn FROM "./data/lives-in.csv"')
+app = Robyn(__file__)
 
-    # Execute Cypher query
-    response = conn.execute(
-        """
-        MATCH (a:User)-[f:Follows]->(b:User)
-        RETURN a.name, b.name, f.since;
-        """
-    )
-    for row in response:
-        print(row)
+@app.get("/")
+async def h(request):
+    return "Hello, world!"
 
-if __name__ == "__main__":
-    main()
+@app.post("/embeddings")
+async def get_embeddings(request):
+    """Endpoint to generate embeddings for text"""
+    # Parse JSON body
+    try:
+        body = request.body
+        if isinstance(body, bytes):
+            body = body.decode('utf-8')
+        
+        if not body.strip():
+            return {"error": "Empty request body"}
+        
+        data = json.loads(body)
+        
+    except json.JSONDecodeError as e:
+        return {"error": f"Invalid JSON: {str(e)}"}
+    except Exception as e:
+        return {"error": f"Request parsing error: {str(e)}"}
+    
+    # Validate and process request
+    try:
+        # Check if it's a single text or batch
+        if "text" in data:
+            # Single text embedding
+            text = data["text"]
+            if not isinstance(text, str):
+                return {"error": "Text must be a string"}
+            
+            if not text.strip():
+                return {"error": "Text cannot be empty"}
+            
+            embeddings = embedding_service.get_embeddings(text)
+            return {
+                "text": text,
+                "embeddings": embeddings,
+                "dimension": len(embeddings)
+            }
+        
+        elif "texts" in data:
+            # Batch text embeddings
+            texts = data["texts"]
+            if not isinstance(texts, list):
+                return {"error": "Texts must be a list"}
+            
+            if not texts:
+                return {"error": "Texts list cannot be empty"}
+            
+            if not all(isinstance(t, str) for t in texts):
+                return {"error": "All items in texts must be strings"}
+            
+            embeddings = embedding_service.get_batch_embeddings(texts)
+            return {
+                "texts": texts,
+                "embeddings": embeddings,
+                "count": len(embeddings),
+                "dimension": len(embeddings[0]) if embeddings else 0
+            }
+        
+        else:
+            return {"error": "Request must contain either 'text' or 'texts' field"}
+    
+    except Exception as e:
+        return {"error": f"Embedding generation error: {str(e)}"}
+
+@app.get("/health")
+async def health_check(request):
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "model": "all-MiniLM-L6-v2",
+        "embedding_service_initialized": embedding_service._initialized
+    }
+
+app.start(port=8080)
