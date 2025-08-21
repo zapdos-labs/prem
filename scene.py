@@ -2,7 +2,7 @@ from scenedetect import VideoManager, SceneManager, open_video
 from scenedetect.detectors import AdaptiveDetector
 from scenedetect.video_splitter import split_video_ffmpeg
 
-def detect_podcast_scenes(video_path, frame_skip=60):
+def detect_podcast_scenes(video_path, frame_skip=60 * 30):
     """
     Fast scene detection for podcast-style videos.
     """

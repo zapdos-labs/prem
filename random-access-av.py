@@ -12,7 +12,8 @@ def save_frame(frame, ts_ms, output_dir):
     cv2.imwrite(os.path.join(output_dir, filename), img_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
 def process_chunk(args):
-    video_path, fps, chunk_timestamps, output_dir, device = args
+    video_path, chunk_timestamps, output_dir, device = args
+    # Open container
     container = av.open(video_path)
     
     if device == "gpu":
@@ -28,25 +29,15 @@ def process_chunk(args):
 
     for ts_ms in chunk_timestamps:
         try:
-            target_pts = int(ts_ms / (stream.time_base * 1000))
+            # Seek to nearest keyframe
             seek_target = int(ts_ms * av.time_base / 1000)
-            container.seek(seek_target, backward=True, stream=stream)
+            container.seek(seek_target, any_frame=False, stream=stream)
 
-            best_frame, min_diff, frames_checked = None, float('inf'), 0
+            # Decode first frame (keyframe)
             for frame in container.decode(stream):
-                if frame.pts is None:
-                    continue
-                diff = abs(frame.pts - target_pts)
-                if diff < min_diff:
-                    best_frame, min_diff = frame, diff
-                frames_checked += 1
-                if diff <= fps / 2 or frames_checked >= fps * 2:
+                if frame.pts is not None:
+                    save_frame(frame, ts_ms, output_dir)
                     break
-                if frame.pts > target_pts + fps * 2:
-                    break
-
-            if best_frame:
-                save_frame(best_frame, ts_ms, output_dir)
         except Exception as e:
             print(f"Error at {ts_ms}ms: {e}")
 
@@ -73,15 +64,15 @@ def open_video(video_path, device="cpu"):
 def generate_timestamps(duration_ms, interval_ms):
     return list(range(0, int(duration_ms), int(interval_ms)))
 
-def parallel_extract(video_path, timestamps_ms, output_dir, fps, device="gpu", workers=None):
+def parallel_extract(video_path, timestamps_ms, output_dir, device="gpu", workers=None):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     
     if workers is None:
-        workers = max(1, cpu_count() - 1)
+        workers = min(max(1, cpu_count() - 1), 4)
 
     chunk_size = (len(timestamps_ms) + workers - 1) // workers
     chunks = [timestamps_ms[i:i + chunk_size] for i in range(0, len(timestamps_ms), chunk_size)]
-    args = [(video_path, fps, chunk, output_dir, device) for chunk in chunks]
+    args = [(video_path, chunk, output_dir, device) for chunk in chunks]
 
     with Pool(workers) as pool:
         counts = pool.map(process_chunk, args)
@@ -93,6 +84,6 @@ if __name__ == "__main__":
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    fps, duration_ms = open_video(video_path, device="gpu")
+    _, duration_ms = open_video(video_path, device="gpu")
     timestamps = generate_timestamps(duration_ms, interval_ms=30000)  # every 30s
-    parallel_extract(video_path, timestamps, "./data/frames_gpu_30s", device="gpu", fps=fps)
+    parallel_extract(video_path, timestamps, "./data/frames_gpu_30s", device="gpu")
