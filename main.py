@@ -9,16 +9,6 @@ app = Robyn(__file__)
 async def h(request):
     return "Hello, world!"
 
-from robyn import Robyn
-from embedding import embedding_service
-import json
-
-app = Robyn(__file__)
-
-@app.get("/")
-async def h(request):
-    return "Hello, world!"
-
 @app.post("/embeddings")
 async def get_embeddings(request):
     """Endpoint to generate embeddings for text"""
@@ -88,8 +78,6 @@ async def health_check(request):
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "model": "all-MiniLM-L6-v2",
-        "embedding_service_initialized": embedding_service._initialized
     }
 
 app.start(port=8080)
