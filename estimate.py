@@ -290,6 +290,8 @@ def plot_analysis(results, save_path="video_analysis.png"):
     heuristics = results['heuristics']
     times_dict = results['times']
     fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+    interest_scores = results['interest_scores']
+    interest_times = results['interest_times']
     # Plot 1: Individual metrics
     ax1 = axes[0]
     colors = ['#2E86C1', '#E74C3C', '#28B463', '#F39C12']
@@ -304,16 +306,9 @@ def plot_analysis(results, save_path="video_analysis.png"):
     ax1.grid(True, alpha=0.3)
     # Plot 2: Interest score - main focus
     ax2 = axes[1]
-    # Smooth interest score using moving average (window=5)
-    def smooth(arr, window=5):
-        if len(arr) < window:
-            return arr
-        return np.convolve(arr, np.ones(window)/window, mode='same')
-    smoothed_interest_scores = smooth(results['interest_scores'], window=5)
-    interest_times = results['interest_times']
-    if len(smoothed_interest_scores) > 0:
-        ax2.plot(interest_times, smoothed_interest_scores, color='#8E44AD', linewidth=2.5, label='Interest Score (Smoothed)')
-        ax2.fill_between(interest_times, smoothed_interest_scores, alpha=0.4, color='#8E44AD')
+    if len(interest_scores) > 0:
+        ax2.plot(interest_times, interest_scores, color='#8E44AD', linewidth=2.5, label='Interest Score')
+        ax2.fill_between(interest_times, interest_scores, alpha=0.4, color='#8E44AD')
         max_time = interest_times[-1] if len(interest_times) > 0 else 100
         ax2.set_xlim(0, max_time)
         if max_time > 3600:
@@ -342,7 +337,7 @@ if __name__ == "__main__":
         start_time = time.time()
         
         # Analyze video
-        results = analyze_video_metadata("./data/test2.mp4")
+        results = analyze_video_metadata("./data/test.mp4")
         
         processing_time = time.time() - start_time
         print(f"⚡ Processing completed in {processing_time:.2f} seconds")
