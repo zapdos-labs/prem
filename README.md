@@ -1,3 +1,3 @@
 # prem
 
-This is a WIP for a video processing pipeline with knowledge graph & semantic binary search
+Module for on-prem deployment. Contains code for knowledge graph & semantic random access.
