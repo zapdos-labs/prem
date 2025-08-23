@@ -12,49 +12,31 @@ def save_frame(frame, ts_ms, output_dir):
     cv2.imwrite(os.path.join(output_dir, filename), img_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
 def process_chunk(args):
-    video_path, chunk_timestamps, output_dir, device = args
-    # Open container
+    video_path, chunk_timestamps, output_dir = args
     container = av.open(video_path)
-    
-    if device == "gpu":
-        try:
-            container.close()
-            container = av.open(video_path, options={'hwaccel': 'auto'})
-            print("Worker using GPU acceleration")
-        except Exception:
-            container = av.open(video_path)
-            print("Worker GPU failed, using CPU")
-
     stream = container.streams.video[0]
 
     for ts_ms in chunk_timestamps:
         try:
-            # Seek to nearest keyframe
-            seek_target = int(ts_ms * av.time_base / 1000)
-            container.seek(seek_target, any_frame=False, stream=stream)
+            seek_target = int(ts_ms / 1000 / stream.time_base)  # Correct seek calculation
+            container.seek(seek_target, any_frame=True, stream=stream)
 
-            # Decode first frame (keyframe)
             for frame in container.decode(stream):
-                if frame.pts is not None:
+                if frame.pts is None:
+                    continue
+                frame_ts_ms = frame.pts * stream.time_base * 1000
+                if abs(frame_ts_ms - ts_ms) < 50:  # 50ms tolerance
                     save_frame(frame, ts_ms, output_dir)
                     break
+
         except Exception as e:
             print(f"Error at {ts_ms}ms: {e}")
 
     container.close()
     return len(chunk_timestamps)
 
-def open_video(video_path, device="cpu"):
+def open_video(video_path):
     container = av.open(video_path)
-    if device == "gpu":
-        try:
-            container.close()
-            container = av.open(video_path, options={'hwaccel': 'auto'})
-            print("Using GPU acceleration")
-        except Exception:
-            container = av.open(video_path)
-            print("GPU acceleration failed, using CPU")
-
     stream = container.streams.video[0]
     fps = float(stream.average_rate)
     duration_ms = float(stream.duration * stream.time_base * 1000)
@@ -64,7 +46,7 @@ def open_video(video_path, device="cpu"):
 def generate_timestamps(duration_ms, interval_ms):
     return list(range(0, int(duration_ms), int(interval_ms)))
 
-def parallel_extract(video_path, timestamps_ms, output_dir, device="gpu", workers=None):
+def parallel_extract(video_path, timestamps_ms, output_dir, workers=None):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     
     if workers is None:
@@ -72,7 +54,7 @@ def parallel_extract(video_path, timestamps_ms, output_dir, device="gpu", worker
 
     chunk_size = (len(timestamps_ms) + workers - 1) // workers
     chunks = [timestamps_ms[i:i + chunk_size] for i in range(0, len(timestamps_ms), chunk_size)]
-    args = [(video_path, chunk, output_dir, device) for chunk in chunks]
+    args = [(video_path, chunk, output_dir) for chunk in chunks]
 
     with Pool(workers) as pool:
         counts = pool.map(process_chunk, args)
@@ -84,6 +66,6 @@ if __name__ == "__main__":
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    _, duration_ms = open_video(video_path, device="gpu")
+    _, duration_ms = open_video(video_path)
     timestamps = generate_timestamps(duration_ms, interval_ms=30000)  # every 30s
-    parallel_extract(video_path, timestamps, "./data/frames_gpu_30s", device="gpu")
+    parallel_extract(video_path, timestamps, "./data/frames_30s")
