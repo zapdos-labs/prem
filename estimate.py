@@ -1,88 +1,93 @@
 import av
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy import signal
-from base import analyze_video_metadata
-
 import ruptures as rpt
+from base import analyze_video_metadata
 from utils import timeit_log
 
-# Normalize metrics to [0, 1] range
-def normalize(arr):
-    arr = np.array(arr)
-    return (arr - arr.min()) / (arr.max() - arr.min()) if arr.max() > arr.min() else arr
+
+# Vectorized normalization (in-place for speed)
+def normalize_array(arr):
+    """
+    Normalize each column of arr to [0, 1].
+    Handles zero-variance columns by leaving them as zeros.
+    """
+    arr = np.asarray(arr, dtype=float)
+    min_vals = arr.min(axis=0)
+    max_vals = arr.max(axis=0)
+    ranges = max_vals - min_vals
+    ranges[ranges == 0] = 1  # avoid division by zero
+    return (arr - min_vals) / ranges
 
 
 @timeit_log
-def detect_change_points(arr, frame_times):
+def detect_change_points(arr, min_points=200,  use_penalty=True):
     """
-    Interpolates arr and frame_times to at least 500 points, then runs ruptures change point detection.
-    Returns breakpoints and interpolated frame_times.
+    Interpolates arr to at least `min_points` points if n < min_points,
+    runs ruptures change point detection with optimized settings.
+
+    Returns:
+        bkps_original_idx: breakpoints mapped back to original indices
+        bkps_interp_idx: breakpoints in interpolated index space
     """
-    min_points = 500
-    n = len(frame_times)
+    n = arr.shape[0]
+    original_idx = np.arange(n)
+
+    # Interpolation only if necessary
     if n < min_points and n > 1:
-        interp_times = np.linspace(frame_times[0], frame_times[-1], min_points)
-        arr_interp = np.zeros((min_points, arr.shape[1]))
-        for i in range(arr.shape[1]):
-            arr_interp[:, i] = np.interp(interp_times, frame_times, arr[:, i])
-        frame_times = interp_times
+        interp_idx = np.linspace(0, n - 1, min_points)
+        arr_interp = np.column_stack([
+            np.interp(interp_idx, original_idx, col) for col in arr.T
+        ])
         arr = arr_interp
         n = min_points
-    algo = rpt.BottomUp(model="l2").fit(arr)
-    bkps = algo.predict(n_bkps=np.ceil(n ** 0.5))
-    # sigma = arr.std()
-    # penalty = np.log(n) * arr.shape[1] * sigma**2
-    # bkps = algo.predict(pen=penalty)
-    return bkps, frame_times
+    else:
+        interp_idx = original_idx  # no interpolation
 
-def plot_analysis(results, save_path="video_analysis.png"):
-    """Clean visualization focused on interest score."""
-    
-    frame_times = np.array(results.get("i_frame_times", []))
-    n = len(frame_times)
-    print('Got results...', n, len(results.get("gop_bitrate")), 
-          len(results.get("i_frame_size")), len(results.get("gop_variances")))
+    # Choose algorithm (Binseg is much faster than BottomUp for large n)
+    algo = rpt.Binseg(model="l2").fit(arr)
 
-    # Normalize frame_times so first frame is at 0 seconds
-    if n > 0:
-        frame_times = frame_times - frame_times[0]
+    # Decide number of breakpoints
+    if use_penalty:
+        sigma = arr.std()
+        penalty = np.log(n) * arr.shape[1] * sigma**2
+        bkps_interp_idx = algo.predict(pen=penalty)
+    else:
+        bkps_interp_idx = algo.predict(n_bkps=int(np.ceil(n ** 0.5)))
 
-    gop_bitrate = normalize(results["gop_bitrate"])
-    i_frame_size = normalize(results["i_frame_size"])
-    gop_variances = normalize(results["gop_variances"])
+    # Remove the last index (ruptures always adds len(arr))
+    if bkps_interp_idx[-1] == n:
+        bkps_interp_idx = bkps_interp_idx[:-1]
 
-    arr = np.vstack([gop_bitrate, i_frame_size, gop_variances]).T
+    # Map back to original indices
+    bkps_original_idx = [int(round(interp_idx[i - 1])) for i in bkps_interp_idx]  # 1-based in ruptures
+
+    # Remove duplicates while preserving order
+    bkps_original_idx = np.unique(bkps_original_idx)
+
+    return bkps_original_idx, bkps_interp_idx
+
+
+def plot_analysis(arr_norm, bkps, save_path="video_analysis.png", max_points=1000):
+    """Plot normalized metrics and detected change points (breakpoints) using index as x-axis."""
     fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(frame_times, gop_bitrate, label="GOP Bitrate", color="#2E86C1", linewidth=2)
-    ax.plot(frame_times, i_frame_size, label="I-frame Size", color="#E74C3C", linewidth=2)
-    ax.plot(frame_times, gop_variances, color="#28B463", linewidth=2, label="GOP Variance")
+    x = np.arange(arr_norm.shape[0])
+    colors = ["#2E86C1", "#E74C3C", "#28B463"]
+    labels = ["GOP Bitrate", "I-frame Size", "GOP Variance"]
 
-    # Draw keyframes (I-frames) as yellow circles
-    # ax.scatter(frame_times, [1.05]*n, color="#F1C40F", marker="o", s=80, label="Keyframe I")
+    # Downsample for faster plotting if too many points
+    step = max(1, len(x) // max_points)
 
-    # Detect change points (ruptures)
-    bkps, frame_times_interp = detect_change_points(arr, frame_times)
-    rupture_times = []
-    for bkp in bkps[:-1]:
-        if bkp < len(frame_times_interp):
-            rt = frame_times_interp[bkp]
-            rupture_times.append(rt)
-            ax.axvline(rt, color='k', linestyle='--', alpha=0.7, label='Change Point' if bkp == bkps[0] else None)
-    from matplotlib.ticker import FuncFormatter
-    import datetime
-    def seconds_to_hms(x, pos):
-        return str(datetime.timedelta(seconds=max(0, int(x))))
-    ax.xaxis.set_major_formatter(FuncFormatter(seconds_to_hms))
-    # Limit base ticks for readability
-    base_ticks = ax.get_xticks()
-    base_ticks = base_ticks[::max(1, len(base_ticks)//10)]  # at most 10 regular ticks
-    all_ticks = sorted(set(list(base_ticks) + rupture_times))
-    ax.set_xticks(all_ticks)
-    ax.set_xticklabels([seconds_to_hms(x, None) for x in all_ticks], rotation=45, fontsize=9)
+    for i in range(arr_norm.shape[1]):
+        ax.plot(x[::step], arr_norm[::step, i], label=labels[i], color=colors[i], linewidth=2)
+
+    # Draw change points as vertical lines
+    for j, bkp in enumerate(bkps):
+        ax.axvline(bkp, color='k', linestyle='--', alpha=0.7, label='Change Point' if j == 0 else None)
+
     ax.set_ylabel("Normalized Value")
-    ax.set_xlabel("Frame Time (hh:mm:ss)")
-    ax.set_title("Video Metrics & Ruptures")
+    ax.set_xlabel("Frame Index")
+    ax.set_title("Video Metrics & Change Points (Ruptures)")
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -93,8 +98,19 @@ def plot_analysis(results, save_path="video_analysis.png"):
 
 if __name__ == "__main__":
     try:
+        # Analyze video and extract metrics
         results = analyze_video_metadata("./data/long.mp4")
-        plot_analysis(results)
+        arr = np.column_stack((results["gop_bitrate"], results["i_frame_size"], results["gop_variances"]))
+
+        # Normalize with optimized vectorized function
+        arr_norm = normalize_array(arr)
+
+        # Detect change points (optimized)
+        bkps_original_idx, _ = detect_change_points(arr_norm, min_points=500, use_penalty=False)
+
+        # Plot and save
+        plot_analysis(arr_norm, bkps_original_idx)
+
     except FileNotFoundError:
         print("❌ Error: Video file not found")
     except Exception as e:
